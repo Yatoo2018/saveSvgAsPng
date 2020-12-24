@@ -117,27 +117,82 @@
     };
   };
 
-  const inlineImages = el => Promise.all(
-    Array.from(el.querySelectorAll('image')).map(image => {
-      let href = image.getAttributeNS('http://www.w3.org/1999/xlink', 'href') || image.getAttribute('href');
+  /**
+   * @description 判断一个url是否是一个后端接口，而非一个静态资源文件, 
+   * @param {URL} url 
+   * @returns {boolean}
+   */
+  var isNotStaticFileUrl = function (url) {
+    try {
+      url = new URL(url);
+    } catch (e) {
+      try {
+        url = new URL(window.location.origin + url);
+      } catch (e) {
+        return false;
+      }
+    }
+    var name = url.pathname.match(/.*\/(\S+)$/)[1];
+    return !/\.(png|jp(e)?g|gif|svg)$/.test(name);
+  };
+
+  /**
+   * @description 根据引用路径获取图片数据转换为base64数据
+   * @param {SVGImageElement} image - SVG图片实例
+   * @returns {Promise}
+   */
+  var dealImageData = function(image) {
+    return new Promise(function(resolve, reject){
+      
+      var href = image.getAttributeNS('http://www.w3.org/1999/xlink', 'href') || image.getAttribute('href');
       if (!href) return Promise.resolve(null);
       if (isExternal(href)) {
         href += (href.indexOf('?') === -1 ? '?' : '&') + 't=' + new Date().valueOf();
       }
-      return new Promise((resolve, reject) => {
-        const canvas = document.createElement('canvas');
-        const img = new Image();
-        img.crossOrigin = 'anonymous';
-        img.src = href;
-        img.onerror = () => reject(new Error(`Could not load ${href}`));
-        img.onload = () => {
-          canvas.width = img.width;
-          canvas.height = img.height;
-          canvas.getContext('2d').drawImage(img, 0, 0);
-          image.setAttributeNS('http://www.w3.org/1999/xlink', 'href', canvas.toDataURL('image/png'));
-          resolve(true);
-        };
-      });
+      if(isNotStaticFileUrl(href)) { // 如果是从后端接口获取文件，firefox使用(new Image).onload回调中会无法获取到文件内容
+        return new Promise(function() {
+          const req = new XMLHttpRequest();
+          req.addEventListener('load', () => {
+            const imageInBase64 = arrayBufferToBase64(req.response);
+            image.setAttributeNS('http://www.w3.org/1999/xlink', 'href', 'data:image/svg+xml;base64,' + imageInBase64);
+            resolve(true);
+          });
+          req.addEventListener('error', e => {
+            console.warn(`Failed to load image from: ${href}`, e);
+            resolve(null);
+          });
+          req.addEventListener('abort', e => {
+            console.warn(`Aborted loading image from: ${href}`, e);
+            resolve(null);
+          });
+          req.open('GET', href);
+          req.responseType = 'arraybuffer';
+          req.send();
+          })
+      } else {
+        return new Promise(function (resolve, reject) {
+          var canvas = document.createElement('canvas');
+          var img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.src = href;
+          img.onerror = function () {
+            return reject(new Error('Could not load ' + href));
+          };
+          img.onload = function () {
+            canvas.width = img.width;
+            canvas.height = img.height;
+            canvas.getContext('2d').drawImage(img, 0, 0);
+            image.setAttributeNS('http://www.w3.org/1999/xlink', 'href', canvas.toDataURL('image/png'));
+            resolve(true);
+          };
+        });
+      }
+    })
+  };
+
+  const inlineImages = el => Promise.all(
+    Array.from(el.querySelectorAll('image')).map(image => {
+      return dealImageData(image);
     })
   );
 
